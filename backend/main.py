@@ -4,7 +4,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, field_validator
 from typing import Literal
 import io
-import pandas as pd
+import csv
 from model import (
     compute_character, compute_capacity, compute_capital,
     compute_conditions, compute_collateral, compute_final_score, make_decision,
@@ -166,36 +166,44 @@ def predict(data: IngestInput, _: str = Depends(get_current_user)):
 
 @app.post("/upload-csv")
 async def upload_csv(file: UploadFile = File(...), _: str = Depends(get_current_user)):
-    """Parse uploaded CSV and return structured data for the first row."""
+    """Parse uploaded CSV and return structured data."""
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only .csv files are accepted")
 
     contents = await file.read()
     try:
-        df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
+        text = contents.decode("utf-8")
+        reader = csv.DictReader(io.StringIO(text))
+        raw_rows = list(reader)
     except Exception:
         raise HTTPException(status_code=400, detail="Could not parse CSV file")
 
+    # Normalize column names
     required = {"company_name", "revenue", "profit", "debt",
                 "gst_growth_rate", "bank_cashflow_stability", "industry_risk", "litigation_flag"}
-    missing = required - set(df.columns.str.strip().str.lower())
+
+    if not raw_rows:
+        raise HTTPException(status_code=400, detail="CSV file is empty")
+
+    columns = {k.strip().lower() for k in raw_rows[0].keys()}
+    missing = required - columns
     if missing:
         raise HTTPException(status_code=400, detail=f"Missing columns: {', '.join(missing)}")
 
-    df.columns = df.columns.str.strip().str.lower()
     rows = []
-    for _, row in df.iterrows():
-        lit = str(row["litigation_flag"]).strip().lower() in ("true", "1", "yes")
-        risk = str(row["industry_risk"]).strip().lower()
+    for row in raw_rows:
+        norm = {k.strip().lower(): v.strip() for k, v in row.items()}
+        lit = norm["litigation_flag"].lower() in ("true", "1", "yes")
+        risk = norm["industry_risk"].lower()
         if risk not in ("low", "medium", "high"):
             risk = "medium"
         rows.append({
-            "company_name":            str(row["company_name"]).strip(),
-            "revenue":                 float(row["revenue"]),
-            "profit":                  float(row["profit"]),
-            "debt":                    float(row["debt"]),
-            "gst_growth_rate":         float(row["gst_growth_rate"]),
-            "bank_cashflow_stability": float(row["bank_cashflow_stability"]),
+            "company_name":            norm["company_name"],
+            "revenue":                 float(norm["revenue"]),
+            "profit":                  float(norm["profit"]),
+            "debt":                    float(norm["debt"]),
+            "gst_growth_rate":         float(norm["gst_growth_rate"]),
+            "bank_cashflow_stability": float(norm["bank_cashflow_stability"]),
             "industry_risk":           risk,
             "litigation_flag":         lit,
         })
