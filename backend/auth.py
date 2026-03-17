@@ -20,7 +20,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
 
 # ── In-memory user store  { username: hashed_password } ─────────────────────
-fake_users_db: dict[str, str] = {}
+fake_users_db: dict = {}
 
 # ── OAuth2 scheme ────────────────────────────────────────────────────────────
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")

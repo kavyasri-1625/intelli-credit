@@ -1,8 +1,8 @@
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel, field_validator
-from typing import Literal
+from pydantic import BaseModel, validator
+from typing import Optional
 import io
 import csv
 from model import (
@@ -20,10 +20,7 @@ app = FastAPI(title="Intelli-Credit API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "https://intelli-credit.netlify.app",  # replace with your Netlify URL
-    ],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -35,26 +32,30 @@ class IngestInput(BaseModel):
     profit: float
     debt: float
     gst_growth_rate: float
-    bank_cashflow_stability: float   # 0–1
-    industry_risk: Literal["low", "medium", "high"]
+    bank_cashflow_stability: float
+    industry_risk: str          # "low" | "medium" | "high"
     litigation_flag: bool
 
-    @field_validator("revenue")
-    @classmethod
+    @validator("revenue")
     def revenue_positive(cls, v):
         if v <= 0:
             raise ValueError("Revenue must be greater than zero")
         return v
 
-    @field_validator("bank_cashflow_stability")
-    @classmethod
+    @validator("bank_cashflow_stability")
     def cashflow_range(cls, v):
         if not (0 <= v <= 1):
             raise ValueError("bank_cashflow_stability must be between 0 and 1")
         return v
 
+    @validator("industry_risk")
+    def risk_valid(cls, v):
+        if v.lower() not in ("low", "medium", "high"):
+            raise ValueError("industry_risk must be low, medium, or high")
+        return v.lower()
 
-# ── Auth routes ──────────────────────────────────────────────────────────────
+
+# ── Auth routes ───────────────────────────────────────────────────────────────
 
 @app.post("/auth/register", status_code=201)
 def register(body: UserRegister):
@@ -84,10 +85,8 @@ def me(current_user: str = Depends(get_current_user)):
 
 @app.post("/ingest")
 def ingest(data: IngestInput, _: str = Depends(get_current_user)):
-    """Data Ingestion Module – normalize and enrich input."""
     profit_margin = data.profit / data.revenue
     debt_ratio = data.debt / data.revenue
-
     return {
         "company_name": data.company_name,
         "revenue": data.revenue,
@@ -102,18 +101,11 @@ def ingest(data: IngestInput, _: str = Depends(get_current_user)):
 
 @app.post("/predict")
 def predict(data: IngestInput, _: str = Depends(get_current_user)):
-    """Full credit appraisal pipeline."""
-    if data.revenue <= 0:
-        raise HTTPException(status_code=400, detail="Revenue must be greater than zero")
-
-    # --- Data Ingestion ---
     profit_margin = data.profit / data.revenue
     debt_ratio = data.debt / data.revenue
 
-    # --- Research Agent ---
     signals = research_agent(data.litigation_flag, data.industry_risk)
 
-    # --- Five Cs Scoring ---
     character  = compute_character(signals["promoter_score"], signals["compliance_score"])
     capacity   = compute_capacity(profit_margin * 100, data.bank_cashflow_stability)
     capital    = compute_capital(debt_ratio)
@@ -129,24 +121,19 @@ def predict(data: IngestInput, _: str = Depends(get_current_user)):
     }
 
     final_score = round(compute_final_score(**scores), 2)
-
-    # --- Decision ---
     decision, loan_amount, interest_rate = make_decision(final_score, data.revenue)
 
-    # --- Explainability ---
     explanation = build_explanation(
         profit_margin, debt_ratio, data.bank_cashflow_stability,
         data.industry_risk, data.litigation_flag,
         signals["promoter_score"], scores, decision,
     )
 
-    # --- CAM ---
     cam = build_cam(
         data.company_name, final_score, decision,
         loan_amount, interest_rate, explanation, scores,
     )
 
-    # --- Suggestions ---
     suggestions = generate_suggestions(
         profit_margin, debt_ratio, data.bank_cashflow_stability,
         data.industry_risk, data.litigation_flag, final_score,
@@ -166,7 +153,6 @@ def predict(data: IngestInput, _: str = Depends(get_current_user)):
 
 @app.post("/upload-csv")
 async def upload_csv(file: UploadFile = File(...), _: str = Depends(get_current_user)):
-    """Parse uploaded CSV and return structured data."""
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only .csv files are accepted")
 
@@ -178,7 +164,6 @@ async def upload_csv(file: UploadFile = File(...), _: str = Depends(get_current_
     except Exception:
         raise HTTPException(status_code=400, detail="Could not parse CSV file")
 
-    # Normalize column names
     required = {"company_name", "revenue", "profit", "debt",
                 "gst_growth_rate", "bank_cashflow_stability", "industry_risk", "litigation_flag"}
 
